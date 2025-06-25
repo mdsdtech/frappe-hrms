@@ -260,8 +260,7 @@ def add_attendance(filters):
 		fields=[
 			"name",
 			"'Attendance' as doctype",
-			"attendance_date as start",
-			"attendance_date as end",
+			"attendance_date",
 			"employee_name",
 			"status",
 			"docstatus",
@@ -282,8 +281,7 @@ def add_holidays(events, start, end, employee=None):
 		events.append(
 			{
 				"doctype": "Holiday",
-				"start": holiday.holiday_date,
-				"end": holiday.holiday_date,
+				"attendance_date": holiday.holiday_date,
 				"title": _("Holiday") + ": " + cstr(holiday.description),
 				"name": holiday.name,
 				"allDay": 1,
@@ -346,6 +344,7 @@ def mark_bulk_attendance(data):
 			"attendance_date": get_datetime(date),
 			"status": data.status,
 			"half_day_status": "Absent" if data.status == "Half Day" else None,
+			"shift": data.shift,
 		}
 		attendance = frappe.get_doc(doc_dict).insert()
 		attendance.submit()

@@ -5,6 +5,7 @@
 import frappe
 from frappe import _
 from frappe.model.mapper import get_mapped_doc
+from frappe.model.workflow import get_workflow_name
 from frappe.query_builder.functions import Sum
 from frappe.utils import cstr, flt, get_link_to_form
 
@@ -37,6 +38,10 @@ class ExpenseClaim(AccountsController, PWANotificationsMixin):
 	def onload(self):
 		self.get("__onload").make_payment_via_journal_entry = frappe.db.get_single_value(
 			"Accounts Settings", "make_payment_via_journal_entry"
+		)
+		self.set_onload(
+			"self_expense_approval_not_allowed",
+			frappe.db.get_single_value("HR Settings", "prevent_self_expense_approval"),
 		)
 
 	def after_insert(self):
@@ -97,6 +102,18 @@ class ExpenseClaim(AccountsController, PWANotificationsMixin):
 					exc=MismatchError,
 				)
 
+	def validate_for_self_approval(self):
+		self_expense_approval_not_allowed = frappe.db.get_single_value(
+			"HR Settings", "prevent_self_expense_approval"
+		)
+		employee_user = frappe.db.get_value("Employee", self.employee, "user_id")
+		if (
+			self_expense_approval_not_allowed
+			and employee_user == frappe.session.user
+			and not get_workflow_name("Expense Claim")
+		):
+			frappe.throw(_("Self-approval for Expense Claims is not allowed"))
+
 	def on_update(self):
 		share_doc_with_approver(self, self.expense_approver)
 		self.publish_update()
@@ -109,10 +126,12 @@ class ExpenseClaim(AccountsController, PWANotificationsMixin):
 		if not self.payable_account and not self.is_paid:
 			frappe.throw(_("Payable Account is mandatory to submit an Expense Claim"))
 
+		self.validate_for_self_approval()
+
 	def publish_update(self):
 		employee_user = frappe.db.get_value("Employee", self.employee, "user_id", cache=True)
 		hrms.refetch_resource("hrms:my_claims", employee_user)
-		hrms.refetch_resource("hrms:team_claims", employee_user)
+		hrms.refetch_resource("hrms:team_claims")
 
 	def on_submit(self):
 		if self.approval_status == "Draft":
@@ -399,14 +418,19 @@ def get_total_reimbursed_amount(doc):
 		# No need to check for cancelled state here as it will anyways update status as cancelled
 		return doc.grand_total
 	else:
+		JournalEntryAccount = frappe.qb.DocType("Journal Entry Account")
 		amount_via_jv = frappe.db.get_value(
 			"Journal Entry Account",
 			{"reference_name": doc.name, "docstatus": 1},
-			"sum(debit_in_account_currency - credit_in_account_currency)",
+			Sum(
+				JournalEntryAccount.debit_in_account_currency - JournalEntryAccount.credit_in_account_currency
+			),
 		)
 
 		amount_via_payment_entry = frappe.db.get_value(
-			"Payment Entry Reference", {"reference_name": doc.name, "docstatus": 1}, "sum(allocated_amount)"
+			"Payment Entry Reference",
+			{"reference_name": doc.name, "docstatus": 1},
+			[{"SUM": "allocated_amount"}],
 		)
 
 		return flt(amount_via_jv) + flt(amount_via_payment_entry)
